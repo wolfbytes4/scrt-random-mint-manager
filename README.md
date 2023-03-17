@@ -1,1 +1,2 @@
-# scrt-random-mint-manager
+# scrt-wolf-pack-quests
+init
