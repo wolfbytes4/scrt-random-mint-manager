@@ -14,7 +14,8 @@ pub struct InstantiateMsg {
     pub shill_contract: ContractInfo,
     pub scrt_contract: ContractInfo,
     pub entropy_shill: String,
-    pub entropy_mint: String
+    pub entropy_mint: String,
+    pub receiving_address: Addr
 }
  
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
@@ -23,7 +24,7 @@ pub struct ContractInfo {
     pub code_hash: String,
     /// contract's address
     pub address: Addr,
-    pub mint_cost: u128
+    pub mint_cost: Uint128
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
@@ -53,14 +54,18 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleReceiveMsg {
-    ReceiveMintScrt {},
-    ReceiveMintShill {},
+    ReceiveMintScrt {
+        quantity: u16
+    },
+    ReceiveMintShill {
+        quantity: u16
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {  
-    GetMintInfo {viewer: ViewerInfo}
+    GetMintInfo {}
 }
  
 
