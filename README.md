@@ -1,0 +1,1 @@
+# scrt-random-mint-manager
