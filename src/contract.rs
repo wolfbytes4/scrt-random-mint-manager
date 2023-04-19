@@ -239,7 +239,7 @@ pub fn mint(
     //add payment send to the stack
     let cosmos_msg = transfer_msg(
         state.receiving_address.to_string(),
-        payment_contract.mint_cost,
+        amount,
         None,
         None,
         BLOCK_SIZE,
