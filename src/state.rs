@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{ Deserialize, Serialize};
 
-use cosmwasm_std::{CanonicalAddr, Uint128};
+use cosmwasm_std::{CanonicalAddr, Uint128, Addr};
 
 use secret_toolkit::{ 
     storage:: { Item, Keymap },
@@ -32,5 +32,6 @@ pub struct State {
     pub shill_contract: ContractInfo,
     pub scrt_contract: ContractInfo,
     pub mint_contract: ContractInfo,
-    pub entropy_mint: String
+    pub entropy_mint: String,
+    pub receiving_address: Addr
 }

@@ -9,7 +9,8 @@ use crate::state::{ State, PRE_LOAD_STORE, CONFIG_ITEM, ADMIN_VIEWING_KEY_ITEM, 
 use secret_toolkit::{
     snip721::{
         mint_nft_msg, set_viewing_key_msg, Authentication, MediaFile, Extension, Metadata, ViewerInfo
-    }
+    },
+    snip20::{register_receive_msg, transfer_msg}
 };  
 use crate::rand::{extend_entropy, Prng, sha_256};
 pub const BLOCK_SIZE: usize = 256;
@@ -32,7 +33,8 @@ pub fn instantiate(
         viewing_key: Some(msg.entropy_shill),
         shill_contract: msg.shill_contract,
         scrt_contract: msg.scrt_contract,
-        mint_contract: msg.mint_contract
+        mint_contract: msg.mint_contract,
+        receiving_address: msg.receiving_address
     };
 
     //Save Contract state
@@ -47,7 +49,7 @@ pub fn instantiate(
             state.viewing_key.clone().unwrap().to_string(),
             None,
             BLOCK_SIZE,
-            state.shill_contract.code_hash,
+            state.shill_contract.code_hash.to_string(),
             state.shill_contract.address.to_string(),
         )?
     );
@@ -56,7 +58,7 @@ pub fn instantiate(
             state.viewing_key.clone().unwrap().to_string(),
             None,
             BLOCK_SIZE,
-            state.scrt_contract.code_hash,
+            state.scrt_contract.code_hash.to_string(),
             state.scrt_contract.address.to_string(),
         )?
     );
@@ -69,7 +71,25 @@ pub fn instantiate(
             state.mint_contract.address.to_string(),
         )?
     );
-   
+    response_msgs.push(
+        register_receive_msg(
+            _env.contract.code_hash.to_string(),
+            None,
+            BLOCK_SIZE,
+            state.shill_contract.code_hash.to_string(),
+            state.shill_contract.address.to_string(),
+        )?
+    );
+    response_msgs.push(
+        register_receive_msg(
+            _env.contract.code_hash.to_string(),
+            None,
+            BLOCK_SIZE,
+            state.scrt_contract.code_hash.to_string(),
+            state.scrt_contract.address.to_string(),
+        )?
+    ); 
+
     deps.api.debug(&format!("Contract was initialized by {}", info.sender));
      
     Ok(Response::new().add_messages(response_msgs))
@@ -88,7 +108,7 @@ pub fn execute(
             from,
             amount,
             msg
-        } => receive(deps, _env, &sender, &from, amount, msg),
+        } => receive(deps, _env, &info.sender, &sender, &from, amount, msg),
         ExecuteMsg::PreLoad { new_data } => pre_load(deps, &info.sender, new_data),
         ExecuteMsg::SetViewingKey { key } => try_set_viewing_key(
             deps,
@@ -125,7 +145,8 @@ pub fn try_set_viewing_key(
 fn receive(
     deps: DepsMut,
     _env: Env,
-    sender: &Addr,
+    info_sender: &Addr,
+    sender: &Addr,//for snip 20 sender and from are the same. Wth??
     from: &Addr,
     amount: Uint128,
     msg: Option<Binary>
@@ -133,37 +154,31 @@ fn receive(
     deps.api.debug(&format!("Receive received"));
     let mut state = CONFIG_ITEM.load(deps.storage)?;
 
-    if sender == &state.scrt_contract.address {
-        if amount.u128() != state.scrt_contract.mint_cost {
-            return Err(ContractError::CustomError {val: "You have attempted to send the wrong amount of tokens".to_string()});
-        }
-        state.amount_paid_scrt = state.amount_paid_scrt + amount;
-    }
-    else if sender == &state.shill_contract.address {
-        if amount.u128() != state.shill_contract.mint_cost {
-            return Err(ContractError::CustomError {val: "You have attempted to send the wrong amount of tokens".to_string()});
-        }
-        state.amount_paid_shill = state.amount_paid_shill + amount;
-    }
-    else{
-        return Err(ContractError::CustomError {val: "Address is not correct snip contract".to_string()});
+    if info_sender != &state.scrt_contract.address && info_sender != &state.shill_contract.address{
+        return Err(ContractError::CustomError {val: info_sender.to_string() + " : " +&from.to_string() + &" Address is not correct snip contract".to_string()});
     }
 
     CONFIG_ITEM.save(deps.storage, &state)?;
 
     if let Some(bin_msg) = msg {
         match from_binary(&bin_msg)? {
-            HandleReceiveMsg::ReceiveMintScrt {} => mint(
+            HandleReceiveMsg::ReceiveMintScrt { quantity } => mint(
                 _env,
                 deps,
                 sender,
-                from
+                info_sender,
+                &state.scrt_contract,
+                quantity,
+                amount
             ),
-            HandleReceiveMsg::ReceiveMintShill {} => mint(
+            HandleReceiveMsg::ReceiveMintShill { quantity } => mint(
                 _env,
                 deps,
                 sender,
-                from
+                info_sender,
+                &state.shill_contract,
+                quantity,
+                amount
             ),
         }
     } else {
@@ -199,62 +214,111 @@ pub fn mint(
     deps: DepsMut,
     sender: &Addr,
     from: &Addr,
+    payment_contract: &ContractInfo,
+    quantity: u16, 
+    amount: Uint128
 ) -> Result<Response, ContractError> {
     let mut state = CONFIG_ITEM.load(deps.storage)?;
+    let mut response_msgs: Vec<CosmosMsg> = Vec::new();
 
+    if from == &state.scrt_contract.address {
+        if amount != state.scrt_contract.mint_cost * Uint128::from(quantity) {
+            return Err(ContractError::CustomError {val: "You have attempted to send the wrong amount of tokens".to_string()});
+        }
+        state.amount_paid_scrt = state.amount_paid_scrt + amount;
+    }
+    else if from == &state.shill_contract.address {
+        if amount != state.shill_contract.mint_cost * Uint128::from(quantity) {
+            return Err(ContractError::CustomError {val: "You have attempted to send the wrong amount of tokens".to_string()});
+        }
+        state.amount_paid_shill = state.amount_paid_shill + amount;
+    }
+    else{
+        return Err(ContractError::CustomError {val: from.to_string() + &" Address is not correct snip contract".to_string()});
+    }
+    //add payment send to the stack
+    let cosmos_msg = transfer_msg(
+        state.receiving_address.to_string(),
+        payment_contract.mint_cost,
+        None,
+        None,
+        BLOCK_SIZE,
+        payment_contract.code_hash.to_string(),
+        payment_contract.address.to_string(),
+    )?;
+    response_msgs.push(cosmos_msg);
+    
     // Checks how many tokens are left
     if state.total == 0 {
         return Err(ContractError::CustomError {val: "All tokens have been minted".to_string()}); 
     }
+ 
+    if state.total < quantity {
+        return Err(ContractError::CustomError {val: "You are trying to mint more than is available".to_string()}); 
+    }
 
-    // Pull random token data for minting then remove from data pool
-    let rng_entropy = extend_entropy(&_env, state.entropy_mint.as_ref(), &sender);
-    let mut rng = Prng::new(state.entropy_mint.as_ref(), &rng_entropy);
-    let num = (rng.next_u32() % (state.total as u32)) as u16 + 1; // an id number between 1 and count
+    if quantity == 0{
+        return Err(ContractError::CustomError {val: "You are trying to mint nothing".to_string()}); 
+    }
 
-    let token_data: PreLoad = PRE_LOAD_STORE.get(deps.storage,&num)
-                                            .ok_or_else(|| StdError::generic_err("Token ID pool is corrupt"))?;
-    
-    state.total = state.total - 1;
 
-    PRE_LOAD_STORE.remove(deps.storage, &num)?;
-    CONFIG_ITEM.save(deps.storage, &state)?;
+    for i in 0..quantity {
+        // Pull random token data for minting then remove from data pool
+        let rng_entropy = extend_entropy(&_env, state.entropy_mint.as_ref(), &sender);
+        let mut rng = Prng::new(state.entropy_mint.as_ref(), &rng_entropy);
+        let num = (rng.next_u32() % (state.total as u32)) as u16 + 1; // an id number between 1 and count
 
-    let public_metadata = Some(Metadata {
-        token_uri: None,
-        extension: Some(Extension {
-            image: None,
-            image_data: None,
-            external_url: None,
-            description: Some("This bone is imbued with special magic power. Feed it to your wolf and watch something amazing happen!".to_string()),
-            name: Some("Magic Bone #".to_string() + &token_data.id.to_string()),
-            attributes: token_data.attributes,
-            background_color: None,
-            animation_url: None,
-            youtube_url: None,
-            media: Some(vec![MediaFile {
-                file_type: Some("image".to_string()),
-                extension: Some("png".to_string()),
-                url: String::from(token_data.img_url),
-                authentication: Some(Authentication {
-                    key: None,
-                    user: None,
-                }),
-            }]),
-            protected_attributes: None,
-        }),
-    });
+        let token_data: PreLoad = PRE_LOAD_STORE.get(deps.storage,&num)
+                                                .ok_or_else(|| StdError::generic_err("Token ID pool is corrupt"))?;
+        let token_swap_data: PreLoad = PRE_LOAD_STORE.get(deps.storage, &state.total)
+                                                .ok_or_else(|| StdError::generic_err("Token pool is corrupt"))?;
+        
 
-    let private_metadata = None;
-    let memo = None;
-    let padding = None;
-    let token_id: Option<String> = Some(token_data.id.clone());
 
-    //add message to send funds to owner
-    Ok(Response::new()
-        .add_message(mint_nft_msg(
+        PRE_LOAD_STORE.remove(deps.storage, &state.total)?;
+        if num != state.total{
+            //swap with last position
+            PRE_LOAD_STORE.insert(deps.storage, &num, &token_swap_data)?;
+        }
+
+
+        state.total = state.total - 1;
+        state.num_minted = state.num_minted + 1;
+        CONFIG_ITEM.save(deps.storage, &state)?;
+
+        let public_metadata = Some(Metadata {
+            token_uri: None,
+            extension: Some(Extension {
+                image: None,
+                image_data: None,
+                external_url: None,
+                description: Some("This bone is imbued with special magic power. Feed it to your wolf and watch something amazing happen!".to_string()),
+                name: Some("Magic Bone #".to_string() + &token_data.id.to_string()),
+                attributes: token_data.attributes,
+                background_color: None,
+                animation_url: None,
+                youtube_url: None,
+                media: Some(vec![MediaFile {
+                    file_type: Some("image".to_string()),
+                    extension: Some("png".to_string()),
+                    url: String::from(token_data.img_url),
+                    authentication: Some(Authentication {
+                        key: None,
+                        user: None,
+                    }),
+                }]),
+                protected_attributes: None,
+            }),
+        });
+
+        let private_metadata = None;
+        let memo = None;
+        let padding = None;
+        let token_id: Option<String> = Some(token_data.id.clone());
+
+        response_msgs.push(mint_nft_msg(
             token_id,
-            Some(from.to_string()),
+            Some(sender.to_string()),
             public_metadata,
             private_metadata,
             memo,
@@ -262,7 +326,11 @@ pub fn mint(
             BLOCK_SIZE,
             state.mint_contract.code_hash.to_string(),
             state.mint_contract.address.to_string()
-        )?)
+        )?);
+    }
+    //add message to send funds to owner
+    Ok(Response::new()
+        .add_messages(response_msgs)
     )
 }
 
@@ -275,30 +343,14 @@ pub fn query(
     msg: QueryMsg,
 ) -> StdResult<Binary> {
     match msg {  
-        QueryMsg::GetMintInfo {viewer} => to_binary(&query_mint_info(deps, viewer)?),  
+        QueryMsg::GetMintInfo {} => to_binary(&query_mint_info(deps)?),  
     }
 }
   
 
 fn query_mint_info( 
-    deps: Deps,
-    viewer: ViewerInfo
+    deps: Deps
 ) -> StdResult<MintInfoResponse> { 
-    check_admin_key(deps, viewer)?;
     let state = CONFIG_ITEM.load(deps.storage)?; 
     Ok(MintInfoResponse { num_minted: state.num_minted, total: state.total, amount_paid_shill: state.amount_paid_shill, amount_paid_scrt: state.amount_paid_scrt })
 } 
-
-fn check_admin_key(deps: Deps, viewer: ViewerInfo) -> StdResult<()> {
-    let admin_viewing_key = ADMIN_VIEWING_KEY_ITEM.load(deps.storage)?;  
-    let prng_seed: Vec<u8> = sha_256(base64::encode(viewer.viewing_key).as_bytes()).to_vec();
-    let vk = base64::encode(&prng_seed);
-
-    if vk != admin_viewing_key.viewing_key || viewer.address != admin_viewing_key.address{
-        return Err(StdError::generic_err(
-            "Wrong viewing key for this address or viewing key not set",
-        )); 
-    }
-
-    return Ok(());
-}
